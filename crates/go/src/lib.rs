@@ -33,9 +33,15 @@ const EXPORT_RETURN_AREA: &str = "exportReturnArea";
 const SYNC_EXPORT_PINNER: &str = "syncExportPinner";
 const PINNER: &str = "pinner";
 
-/// Adds the wit-bindgen GitHub repository prefix to a package name.
+/// Adds the shared package repository prefix to a package name.
 fn remote_pkg(name: &str) -> String {
-    format!(r#""github.com/bytecodealliance/wit-bindgen/{name}""#)
+    let prefix = match name {
+        "types" => "witTypes",
+        "async" => "witAsync",
+        "runtime" => "witRuntime",
+        _ => unimplemented!(),
+    };
+    format!(r#"{prefix} "go.bytecodealliance.org/pkg/wit/{name}""#)
 }
 
 #[derive(Default, Debug, Copy, Clone)]
@@ -283,34 +289,34 @@ impl Go {
                         format!("*{name}")
                     }
                     TypeDefKind::Option(ty) => {
-                        imports.insert(remote_pkg("wit_types"));
+                        imports.insert(remote_pkg("types"));
                         let ty = self.type_name(resolve, *ty, local, in_import, imports);
-                        format!("wit_types.Option[{ty}]")
+                        format!("witTypes.Option[{ty}]")
                     }
                     TypeDefKind::List(ty) => {
                         let ty = self.type_name(resolve, *ty, local, in_import, imports);
                         format!("[]{ty}")
                     }
                     TypeDefKind::Result(result) => {
-                        imports.insert(remote_pkg("wit_types"));
+                        imports.insert(remote_pkg("types"));
                         let ok_type = result
                             .ok
                             .map(|ty| self.type_name(resolve, ty, local, in_import, imports))
                             .unwrap_or_else(|| {
                                 self.need_unit = true;
-                                "wit_types.Unit".into()
+                                "witTypes.Unit".into()
                             });
                         let err_type = result
                             .err
                             .map(|ty| self.type_name(resolve, ty, local, in_import, imports))
                             .unwrap_or_else(|| {
                                 self.need_unit = true;
-                                "wit_types.Unit".into()
+                                "witTypes.Unit".into()
                             });
-                        format!("wit_types.Result[{ok_type}, {err_type}]")
+                        format!("witTypes.Result[{ok_type}, {err_type}]")
                     }
                     TypeDefKind::Tuple(tuple) => {
-                        imports.insert(remote_pkg("wit_types"));
+                        imports.insert(remote_pkg("types"));
                         let count = tuple.types.len();
                         if count > 16 {
                             todo!(
@@ -325,29 +331,29 @@ impl Go {
                             .map(|ty| self.type_name(resolve, *ty, local, in_import, imports))
                             .collect::<Vec<_>>()
                             .join(", ");
-                        format!("wit_types.Tuple{count}[{types}]")
+                        format!("witTypes.Tuple{count}[{types}]")
                     }
                     TypeDefKind::Future(ty) => {
                         self.need_future = true;
-                        imports.insert(remote_pkg("wit_types"));
+                        imports.insert(remote_pkg("types"));
                         let ty = ty
                             .map(|ty| self.type_name(resolve, ty, local, in_import, imports))
                             .unwrap_or_else(|| {
                                 self.need_unit = true;
-                                "wit_types.Unit".into()
+                                "witTypes.Unit".into()
                             });
-                        format!("*wit_types.FutureReader[{ty}]")
+                        format!("*witTypes.FutureReader[{ty}]")
                     }
                     TypeDefKind::Stream(ty) => {
                         self.need_stream = true;
-                        imports.insert(remote_pkg("wit_types"));
+                        imports.insert(remote_pkg("types"));
                         let ty = ty
                             .map(|ty| self.type_name(resolve, ty, local, in_import, imports))
                             .unwrap_or_else(|| {
                                 self.need_unit = true;
-                                "wit_types.Unit".into()
+                                "witTypes.Unit".into()
                             });
-                        format!("*wit_types.StreamReader[{ty}]")
+                        format!("*witTypes.StreamReader[{ty}]")
                     }
                     TypeDefKind::Type(ty) => {
                         self.type_name(resolve, *ty, local, in_import, imports)
@@ -392,7 +398,7 @@ impl Go {
             need_unsafe: true,
             ..InterfaceData::default()
         };
-        data.imports.insert(remote_pkg("wit_types"));
+        data.imports.insert(remote_pkg("types"));
 
         let (payload, snake) = if let Some(ty) = payload_ty {
             (
@@ -401,7 +407,7 @@ impl Go {
             )
         } else {
             self.need_unit = true;
-            ("wit_types.Unit".into(), "unit".into())
+            ("witTypes.Unit".into(), "unit".into())
         };
         let camel = snake.to_upper_camel_case();
 
@@ -415,7 +421,7 @@ impl Go {
             None => (
                 format!(
                     "func wasm_{kind}_lift_{snake}(src unsafe.Pointer) {payload} {{
-	return wit_types.Unit{{}}
+	return witTypes.Unit{{}}
 }}
 "
                 ),
@@ -521,7 +527,7 @@ func wasm_{kind}_drop_writable_{snake}(handle int32)
 
 {lower}
 
-var wasm_{kind}_vtable_{snake} = wit_types.{upper_kind}Vtable[{payload}]{{
+var wasm_{kind}_vtable_{snake} = witTypes.{upper_kind}Vtable[{payload}]{{
 	{size},
 	{align},
 	wasm_{kind}_read_{snake},
@@ -534,14 +540,14 @@ var wasm_{kind}_vtable_{snake} = wit_types.{upper_kind}Vtable[{payload}]{{
 	{lower_name},
 }}
 
-func Make{upper_kind}{camel}() (*wit_types.{upper_kind}Writer[{payload}], *wit_types.{upper_kind}Reader[{payload}]) {{
+func Make{upper_kind}{camel}() (*witTypes.{upper_kind}Writer[{payload}], *witTypes.{upper_kind}Reader[{payload}]) {{
 	pair := wasm_{kind}_new_{snake}()
-	return wit_types.Make{upper_kind}Writer[{payload}](&wasm_{kind}_vtable_{snake}, int32(pair >> 32)),
-		wit_types.Make{upper_kind}Reader[{payload}](&wasm_{kind}_vtable_{snake}, int32(pair & 0xFFFFFFFF))
+	return witTypes.Make{upper_kind}Writer[{payload}](&wasm_{kind}_vtable_{snake}, int32(pair >> 32)),
+		witTypes.Make{upper_kind}Reader[{payload}](&wasm_{kind}_vtable_{snake}, int32(pair & 0xFFFFFFFF))
 }}
 
-func Lift{upper_kind}{camel}(handle int32) *wit_types.{upper_kind}Reader[{payload}] {{
-	return wit_types.Make{upper_kind}Reader[{payload}](&wasm_{kind}_vtable_{snake}, handle)
+func Lift{upper_kind}{camel}(handle int32) *witTypes.{upper_kind}Reader[{payload}] {{
+	return witTypes.Make{upper_kind}Reader[{payload}](&wasm_{kind}_vtable_{snake}, handle)
 }}
 "#
         );
@@ -664,7 +670,7 @@ impl WorldGenerator for Go {
     fn preprocess(&mut self, resolve: &Resolve, world: WorldId) {
         _ = world;
         self.sizes.fill(resolve);
-        self.imports.insert(remote_pkg("wit_runtime"));
+        self.imports.insert(remote_pkg("runtime"));
     }
 
     fn import_interface(
@@ -849,17 +855,17 @@ impl WorldGenerator for Go {
             ("wit_exports/wit_exports.go", "wit_exports", "")
         } else {
             // This is the literal location of the Go package.
-            let replacement_pkg = concat!(
-                "github.com/bytecodealliance/wit-bindgen/crates/go/src/package v",
-                env!("CARGO_PKG_VERSION")
-            );
+            // TODO: We need to pin the release version
+            // let replacement_pkg = concat!(
+            //     "github.com/bytecodealliance/wit-bindgen/crates/go/src/package v",
+            //     env!("CARGO_PKG_VERSION")
+            // );
 
             files.push(
                 "go.mod",
                 format!(
-                    "module {}\n\ngo 1.25\n\nreplace github.com/bytecodealliance/wit-bindgen => {}",
+                    "module {}\n\ngo 1.25",
                     self.opts.pkg_name.as_deref().unwrap_or("wit_component"),
-                    replacement_pkg
                 )
                 .as_bytes(),
             );
@@ -889,7 +895,7 @@ import (
 )
 
 var staticPinner = runtime.Pinner{{}}
-var {EXPORT_RETURN_AREA} = uintptr(wit_runtime.Allocate(&staticPinner, {size}, {align}))
+var {EXPORT_RETURN_AREA} = uintptr(witRuntime.Allocate(&staticPinner, {size}, {align}))
 var {SYNC_EXPORT_PINNER} = runtime.Pinner{{}}
 
 {src}
@@ -1002,10 +1008,10 @@ impl Go {
         generator.imports = imports;
 
         let code = if async_ {
-            generator.imports.insert(remote_pkg("wit_async"));
+            generator.imports.insert(remote_pkg("async"));
 
             let (lower, wasm_params) = if sig.indirect_params {
-                generator.imports.insert(remote_pkg("wit_runtime"));
+                generator.imports.insert(remote_pkg("runtime"));
 
                 let params_pointer = generator.locals.tmp("params");
                 let abi = generator
@@ -1034,7 +1040,7 @@ impl Go {
                 generator.need_pinner = true;
                 (
                     format!(
-                        "{params_pointer} := wit_runtime.Allocate({PINNER}, {size}, {align})\n{code}"
+                        "{params_pointer} := witRuntime.Allocate({PINNER}, {size}, {align})\n{code}"
                     ),
                     vec![format!("uintptr({params_pointer})")],
                 )
@@ -1089,7 +1095,7 @@ return {results}"
 
             format!(
                 "{lower}
-wit_async.SubtaskWait(uint32({raw_name}({wasm_params})))
+witAsync.SubtaskWait(uint32({raw_name}({wasm_params})))
 {lift}
 "
             )
@@ -1108,12 +1114,12 @@ wit_async.SubtaskWait(uint32({raw_name}({wasm_params})))
         let return_area = |generator: &mut FunctionGenerator<'_>,
                            size: ArchitectureSize,
                            align: Alignment| {
-            generator.imports.insert(remote_pkg("wit_runtime"));
+            generator.imports.insert(remote_pkg("runtime"));
             generator.need_pinner = true;
             let size = size.format(POINTER_SIZE_EXPRESSION);
             let align = align.format(POINTER_SIZE_EXPRESSION);
             format!(
-                "{IMPORT_RETURN_AREA} := uintptr(wit_runtime.Allocate({PINNER}, {size}, {align}))"
+                "{IMPORT_RETURN_AREA} := uintptr(witRuntime.Allocate({PINNER}, {size}, {align}))"
             )
         };
 
@@ -1220,7 +1226,7 @@ func {camel}({go_params}) {go_results} {{
         self.imports.extend(imports);
 
         let (pinner, other, start, end) = if async_ {
-            self.imports.insert(remote_pkg("wit_async"));
+            self.imports.insert(remote_pkg("async"));
 
             let module = match interface {
                 Some(name) => resolve.name_world_key(name),
@@ -1261,14 +1267,14 @@ func {camel}({go_params}) {go_results} {{
 
 //go:wasmexport [callback]{prefix}{export_name}
 func wasm_export_callback_{name}(event0 uint32, event1 uint32, event2 uint32) uint32 {{
-        return wit_async.Callback(event0, event1, event2)
+        return witAsync.Callback(event0, event1, event2)
 }}
 
 //go:wasmimport [export]{module} [task-return]{function}
 func wasm_export_task_return_{name}({task_return_params})
 "
                 ),
-                "return int32(wit_async.Run(func() {",
+                "return int32(witAsync.Run(func() {",
                 "}))",
             )
         } else if abi::guest_export_needs_post_return(resolve, func) {
@@ -1560,7 +1566,7 @@ impl Bindgen for FunctionGenerator<'_> {
 
             if !self.return_area_size.is_empty() {
                 self.need_pinner = true;
-                self.imports.insert(remote_pkg("wit_runtime"));
+                self.imports.insert(remote_pkg("runtime"));
             }
 
             IMPORT_RETURN_AREA.into()
@@ -1669,7 +1675,7 @@ impl Bindgen for FunctionGenerator<'_> {
             Instruction::ListLower { element, .. } => {
                 self.need_unsafe = true;
                 self.need_pinner = true;
-                self.imports.insert(remote_pkg("wit_runtime"));
+                self.imports.insert(remote_pkg("runtime"));
                 let (body, _) = self.blocks.pop().unwrap();
                 let value = &operands[0];
                 let slice = self.locals.tmp("slice");
@@ -1689,7 +1695,7 @@ impl Bindgen for FunctionGenerator<'_> {
                     self.src,
                     "{slice} := {value}
 {length} := uint32(len({slice}))
-{result} := wit_runtime.Allocate({PINNER}, uintptr({length} * {size}), {align})
+{result} := witRuntime.Allocate({PINNER}, uintptr({length} * {size}), {align})
 for index, {ITER_ELEMENT} := range {slice} {{
         {ITER_BASE_POINTER} := unsafe.Add({result}, index * {size})
         {body}
@@ -1726,8 +1732,8 @@ for index := 0; index < int({length}); index++ {{
             }
             Instruction::CallInterface { func, .. } => {
                 if self.unpin_params {
-                    self.imports.insert(remote_pkg("wit_runtime"));
-                    uwriteln!(self.src, "wit_runtime.Unpin()");
+                    self.imports.insert(remote_pkg("runtime"));
+                    uwriteln!(self.src, "witRuntime.Unpin()");
                 }
 
                 let name = func.item_name().to_upper_camel_case();
@@ -1770,7 +1776,7 @@ for index := 0; index < int({length}); index++ {{
                     {
                         let count = tuple.types.len();
                         self.generator.tuples.insert(count);
-                        self.imports.insert(remote_pkg("wit_types"));
+                        self.imports.insert(remote_pkg("types"));
 
                         let results = (0..count)
                             .map(|_| self.locals.tmp("result"))
@@ -1787,7 +1793,7 @@ for index := 0; index < int({length}); index++ {{
                         uwriteln!(
                             self.src,
                             "{results} := {call}
-{result} := wit_types.Tuple{count}[{types}]{{{results}}}"
+{result} := witTypes.Tuple{count}[{types}]{{{results}}}"
                         );
                     } else {
                         uwriteln!(self.src, "{result} := {call}");
@@ -1964,8 +1970,8 @@ if {value} {{
                     .collect::<Vec<_>>()
                     .join(", ");
                 let fields = operands.join(", ");
-                self.imports.insert(remote_pkg("wit_types"));
-                results.push(format!("wit_types.Tuple{count}[{types}]{{{fields}}}"));
+                self.imports.insert(remote_pkg("types"));
+                results.push(format!("witTypes.Tuple{count}[{types}]{{{fields}}}"));
             }
             Instruction::FlagsLower { .. } => {
                 let value = operands.pop().unwrap();
@@ -1993,7 +1999,7 @@ if {value} {{
                 ..
             } => {
                 self.generator.need_option = true;
-                self.imports.insert(remote_pkg("wit_types"));
+                self.imports.insert(remote_pkg("types"));
                 let (some, some_results) = self.blocks.pop().unwrap();
                 let (none, none_results) = self.blocks.pop().unwrap();
                 let value = &operands[0];
@@ -2032,10 +2038,10 @@ if {value} {{
                     self.src,
                     r#"{declarations}
 switch {value}.Tag() {{
-case wit_types.OptionNone:
+case witTypes.OptionNone:
         {none}
         {none_result_assignments}
-case wit_types.OptionSome:
+case witTypes.OptionSome:
         {VARIANT_PAYLOAD_NAME} := {value}.Some()
         {some}
         {some_result_assignments}
@@ -2046,7 +2052,7 @@ default:
             }
             Instruction::OptionLift { ty, payload } => {
                 self.generator.need_option = true;
-                self.imports.insert(remote_pkg("wit_types"));
+                self.imports.insert(remote_pkg("types"));
                 let (some, some_results) = self.blocks.pop().unwrap();
                 let (none, none_results) = self.blocks.pop().unwrap();
                 assert!(none_results.is_empty());
@@ -2062,10 +2068,10 @@ default:
 switch {tag} {{
 case 0:
         {none}
-        {result} = wit_types.None[{some_type}]()
+        {result} = witTypes.None[{some_type}]()
 case 1:
         {some}
-        {result} = wit_types.Some[{some_type}]({some_result})
+        {result} = witTypes.Some[{some_type}]({some_result})
 default:
         panic("unreachable")
 }}"#
@@ -2078,7 +2084,7 @@ default:
                 ..
             } => {
                 self.generator.need_result = true;
-                self.imports.insert(remote_pkg("wit_types"));
+                self.imports.insert(remote_pkg("types"));
                 let (err, err_results) = self.blocks.pop().unwrap();
                 let (ok, ok_results) = self.blocks.pop().unwrap();
                 let value = &operands[0];
@@ -2131,11 +2137,11 @@ default:
                     self.src,
                     r#"{declarations}
 switch {value}.Tag() {{
-case wit_types.ResultOk:
+case witTypes.ResultOk:
         {ok_set_payload}
         {ok}
         {ok_result_assignments}
-case wit_types.ResultErr:
+case witTypes.ResultErr:
         {err_set_payload}
         {err}
         {err_result_assignments}
@@ -2146,7 +2152,7 @@ default:
             }
             Instruction::ResultLift { ty, result, .. } => {
                 self.generator.need_result = true;
-                self.imports.insert(remote_pkg("wit_types"));
+                self.imports.insert(remote_pkg("types"));
                 let (err, err_results) = self.blocks.pop().unwrap();
                 let (ok, ok_results) = self.blocks.pop().unwrap();
                 assert_eq!(ok_results.is_empty(), result.ok.is_none());
@@ -2155,13 +2161,13 @@ default:
                     &ok_results[0]
                 } else {
                     self.generator.need_unit = true;
-                    "wit_types.Unit{}"
+                    "witTypes.Unit{}"
                 };
                 let err_result = if result.err.is_some() {
                     &err_results[0]
                 } else {
                     self.generator.need_unit = true;
-                    "wit_types.Unit{}"
+                    "witTypes.Unit{}"
                 };
                 let ty = self.type_name(resolve, Type::Id(*ty));
                 let ok_type = result
@@ -2169,14 +2175,14 @@ default:
                     .map(|ty| self.type_name(resolve, ty))
                     .unwrap_or_else(|| {
                         self.generator.need_unit = true;
-                        "wit_types.Unit".into()
+                        "witTypes.Unit".into()
                     });
                 let err_type = result
                     .err
                     .map(|ty| self.type_name(resolve, ty))
                     .unwrap_or_else(|| {
                         self.generator.need_unit = true;
-                        "wit_types.Unit".into()
+                        "witTypes.Unit".into()
                     });
                 let result = self.locals.tmp("result");
                 let tag = &operands[0];
@@ -2186,10 +2192,10 @@ default:
 switch {tag} {{
 case 0:
         {ok}
-        {result} = wit_types.Ok[{ok_type}, {err_type}]({ok_result})
+        {result} = witTypes.Ok[{ok_type}, {err_type}]({ok_result})
 case 1:
         {err}
-        {result} = wit_types.Err[{ok_type}, {err_type}]({err_result})
+        {result} = witTypes.Err[{ok_type}, {err_type}]({err_result})
 default:
         panic("unreachable")
 }}"#
@@ -2536,7 +2542,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             .unwrap_or_else(|| "$root".into());
 
         if self.in_import {
-            self.imports.insert(remote_pkg("wit_runtime"));
+            self.imports.insert(remote_pkg("runtime"));
             self.need_runtime = true;
             let docs = format_docs(docs);
             uwriteln!(
@@ -2546,7 +2552,7 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
 func resourceDrop{camel}(handle int32)
 
 {docs}type {camel} struct {{
-        handle *wit_runtime.Handle
+        handle *witRuntime.Handle
 }}
 
 func (self *{camel}) TakeHandle() int32 {{
@@ -2569,7 +2575,7 @@ func (self *{camel}) Drop() {{
 }}
 
 func {camel}FromOwnHandle(handleValue int32) *{camel} {{
-        handle := wit_runtime.MakeHandle(handleValue)
+        handle := witRuntime.MakeHandle(handleValue)
         value := &{camel}{{handle}}
         runtime.AddCleanup(value, func(_ int) {{
                 handleValue := handle.TakeOrNil()
@@ -2687,7 +2693,7 @@ const (
     }
 
     fn type_tuple(&mut self, _: TypeId, name: &str, tuple: &Tuple, docs: &Docs) {
-        self.imports.insert(remote_pkg("wit_types"));
+        self.imports.insert(remote_pkg("types"));
         let count = tuple.types.len();
         self.generator.tuples.insert(count);
         let name = name.to_upper_camel_case();
@@ -2701,7 +2707,7 @@ const (
 
         uwriteln!(
             self.src,
-            "{docs}type {name} = wit_types.Tuple{count}[{types}]"
+            "{docs}type {name} = witTypes.Tuple{count}[{types}]"
         );
     }
 
@@ -2790,35 +2796,35 @@ func (self {name}) Tag() {repr} {{
 
     fn type_option(&mut self, _: TypeId, name: &str, payload: &Type, docs: &Docs) {
         self.generator.need_option = true;
-        self.imports.insert(remote_pkg("wit_types"));
+        self.imports.insert(remote_pkg("types"));
         let name = name.to_upper_camel_case();
         let ty = self.type_name(self.resolve, *payload);
         let docs = format_docs(docs);
-        uwriteln!(self.src, "{docs}type {name} = wit_types.Option[{ty}]");
+        uwriteln!(self.src, "{docs}type {name} = witTypes.Option[{ty}]");
     }
 
     fn type_result(&mut self, _: TypeId, name: &str, result: &Result_, docs: &Docs) {
         self.generator.need_result = true;
-        self.imports.insert(remote_pkg("wit_types"));
+        self.imports.insert(remote_pkg("types"));
         let name = name.to_upper_camel_case();
         let ok_type = result
             .ok
             .map(|ty| self.type_name(self.resolve, ty))
             .unwrap_or_else(|| {
                 self.generator.need_unit = true;
-                "wit_types.Unit".into()
+                "witTypes.Unit".into()
             });
         let err_type = result
             .err
             .map(|ty| self.type_name(self.resolve, ty))
             .unwrap_or_else(|| {
                 self.generator.need_unit = true;
-                "wit_types.Unit".into()
+                "witTypes.Unit".into()
             });
         let docs = format_docs(docs);
         uwriteln!(
             self.src,
-            "{docs}type {name} = wit_types.Result[{ok_type}, {err_type}]"
+            "{docs}type {name} = witTypes.Result[{ok_type}, {err_type}]"
         );
     }
 
