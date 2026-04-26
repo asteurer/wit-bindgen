@@ -16,7 +16,7 @@ use wit_bindgen_core::abi::{
 use wit_bindgen_core::wit_parser::{
     Alignment, ArchitectureSize, Docs, Enum, Flags, FlagsRepr, Function, FunctionKind, Handle, Int,
     InterfaceId, Package, PackageName, Param, Record, Resolve, Result_, SizeAlign, Tuple, Type,
-    TypeDefKind, TypeId, TypeOwner, Variant, WorldId, WorldKey,
+    TypeDef, TypeDefKind, TypeId, TypeOwner, Variant, WorldId, WorldKey,
 };
 use wit_bindgen_core::{
     AsyncFilterSet, Direction, Files, InterfaceGenerator as _, Ns, WorldGenerator, uwriteln,
@@ -51,6 +51,41 @@ const REMOTE_PKG_VERSION: &str = "v0.2.1";
 /// shared remote package isn't recorded. This enables downstream users to retrieve the version programmatically.
 pub fn remote_pkg_version() -> String {
     format!("go.bytecodealliance.org/pkg {REMOTE_PKG_VERSION}")
+}
+
+fn escape_go_keyword(name: &str) -> String {
+    const GO_KEYWORDS: &[&str] = &[
+        "break",
+        "case",
+        "chan",
+        "const",
+        "continue",
+        "default",
+        "defer",
+        "else",
+        "fallthrough",
+        "for",
+        "func",
+        "go",
+        "goto",
+        "if",
+        "import",
+        "interface",
+        "map",
+        "package",
+        "range",
+        "return",
+        "select",
+        "struct",
+        "switch",
+        "type",
+        "var",
+    ];
+    if GO_KEYWORDS.contains(&name) {
+        format!("{name}_")
+    } else {
+        name.to_string()
+    }
 }
 
 #[derive(Default, Debug, Copy, Clone)]
@@ -570,16 +605,16 @@ func wasm_{kind}_drop_writable_{snake}(handle int32)
 {lower}
 
 var wasm_{kind}_vtable_{snake} = witTypes.{upper_kind}Vtable[{payload}]{{
-	{size},
-	{align},
-	wasm_{kind}_read_{snake},
-	wasm_{kind}_write_{snake},
-	nil,
-	nil,
-	wasm_{kind}_drop_readable_{snake},
-	wasm_{kind}_drop_writable_{snake},
-	{lift_name},
-	{lower_name},
+	Size: {size},
+	Align: {align},
+	Read: wasm_{kind}_read_{snake},
+	Write: wasm_{kind}_write_{snake},
+	CancelRead: nil,
+	CancelWrite: nil,
+	DropReadable: wasm_{kind}_drop_readable_{snake},
+	DropWritable: wasm_{kind}_drop_writable_{snake},
+	Lift: {lift_name},
+	Lower: {lower_name},
 }}
 
 func Make{upper_kind}{camel}() (*witTypes.{upper_kind}Writer[{payload}], *witTypes.{upper_kind}Reader[{payload}]) {{
@@ -595,6 +630,57 @@ func Lift{upper_kind}{camel}(handle int32) *witTypes.{upper_kind}Reader[{payload
         );
 
         data
+    }
+
+    /// By using a type's own name, this method helps prevent a scenario in which structurally
+    /// identical type aliases generate the same mangled name:
+    /// ```ignore
+    /// // without type_alias_guard
+    /// type a = result<u8, u32>;   // → mangle produces "result_u8_u32"
+    /// type b = result<u8, u32>;   // → mangle produces "result_u8_u32" (collision!)
+    ///
+    /// // with type_alias_guard
+    /// type a = result<u8, u32>;   // → mangle produces "result_a"
+    /// type b = result<u8, u32>;   // → mangle produces "result_b"
+    /// ```
+    fn type_alias_guard(
+        &self,
+        resolve: &Resolve,
+        ty: &TypeDef,
+        local: Option<&WorldKey>,
+    ) -> String {
+        let package = match ty.owner {
+            TypeOwner::Interface(interface) => {
+                let key = self
+                    .interface_names
+                    .get(&interface)
+                    .cloned()
+                    .unwrap_or(WorldKey::Interface(interface));
+
+                if local == Some(&key) {
+                    String::new()
+                } else {
+                    format!(
+                        "{}_",
+                        self.interface_name(
+                            resolve,
+                            Some(
+                                &self
+                                    .interface_names
+                                    .get(&interface)
+                                    .cloned()
+                                    .unwrap_or(WorldKey::Interface(interface))
+                            )
+                        )
+                    )
+                }
+            }
+            _ => String::new(),
+        };
+
+        let name = ty.name.as_ref().unwrap().to_snake_case();
+
+        format!("{package}{name}")
     }
 
     fn mangle_name(&self, resolve: &Resolve, ty: Type, local: Option<&WorldKey>) -> String {
@@ -623,90 +709,89 @@ func Lift{upper_kind}{camel}(handle int32) *witTypes.{upper_kind}Reader[{payload
                     | TypeDefKind::Variant(_)
                     | TypeDefKind::Enum(_)
                     | TypeDefKind::Flags(_)
-                    | TypeDefKind::Resource => {
-                        let package = match ty.owner {
-                            TypeOwner::Interface(interface) => {
-                                let key = self
-                                    .interface_names
-                                    .get(&interface)
-                                    .cloned()
-                                    .unwrap_or(WorldKey::Interface(interface));
-
-                                if local == Some(&key) {
-                                    String::new()
-                                } else {
-                                    format!(
-                                        "{}_",
-                                        self.interface_name(
-                                            resolve,
-                                            Some(
-                                                &self
-                                                    .interface_names
-                                                    .get(&interface)
-                                                    .cloned()
-                                                    .unwrap_or(WorldKey::Interface(interface))
-                                            )
-                                        )
-                                    )
-                                }
-                            }
-                            _ => String::new(),
-                        };
-
-                        let name = ty.name.as_ref().unwrap().to_snake_case();
-
-                        format!("{package}{name}")
-                    }
+                    | TypeDefKind::Resource
+                    | TypeDefKind::Type(_) => self.type_alias_guard(resolve, ty, local),
                     TypeDefKind::Option(some) => {
-                        format!("option_{}", self.mangle_name(resolve, *some, local))
+                        if ty.name.is_some() {
+                            self.type_alias_guard(resolve, ty, local)
+                        } else {
+                            format!("option_{}", self.mangle_name(resolve, *some, local))
+                        }
                     }
-                    TypeDefKind::Result(result) => format!(
-                        "result_{}_{}",
-                        result
-                            .ok
-                            .map(|ty| self.mangle_name(resolve, ty, local))
-                            .unwrap_or_else(|| "unit".into()),
-                        result
-                            .err
-                            .map(|ty| self.mangle_name(resolve, ty, local))
-                            .unwrap_or_else(|| "unit".into())
-                    ),
-                    TypeDefKind::List(ty) => {
-                        format!("list_{}", self.mangle_name(resolve, *ty, local))
+                    TypeDefKind::Result(result) => {
+                        if ty.name.is_some() {
+                            self.type_alias_guard(resolve, ty, local)
+                        } else {
+                            format!(
+                                "result_{}_{}",
+                                result
+                                    .ok
+                                    .map(|ty| self.mangle_name(resolve, ty, local))
+                                    .unwrap_or_else(|| "unit".into()),
+                                result
+                                    .err
+                                    .map(|ty| self.mangle_name(resolve, ty, local))
+                                    .unwrap_or_else(|| "unit".into())
+                            )
+                        }
+                    }
+                    TypeDefKind::List(inner) => {
+                        if ty.name.is_some() {
+                            self.type_alias_guard(resolve, ty, local)
+                        } else {
+                            format!("list_{}", self.mangle_name(resolve, *inner, local))
+                        }
                     }
                     TypeDefKind::Tuple(tuple) => {
-                        let types = tuple
-                            .types
-                            .iter()
-                            .map(|ty| self.mangle_name(resolve, *ty, local))
-                            .collect::<Vec<_>>()
-                            .join("_");
-                        format!("tuple{}_{types}", tuple.types.len())
+                        if ty.name.is_some() {
+                            self.type_alias_guard(resolve, ty, local)
+                        } else {
+                            let types = tuple
+                                .types
+                                .iter()
+                                .map(|inner| self.mangle_name(resolve, *inner, local))
+                                .collect::<Vec<_>>()
+                                .join("_");
+                            format!("tuple{}_{types}", tuple.types.len())
+                        }
                     }
                     TypeDefKind::Handle(Handle::Own(ty) | Handle::Borrow(ty)) => {
                         self.mangle_name(resolve, Type::Id(*ty), local)
                     }
-                    TypeDefKind::Type(ty) => self.mangle_name(resolve, *ty, local),
-                    TypeDefKind::Stream(ty) => {
-                        format!(
-                            "stream_{}",
-                            ty.map(|ty| self.mangle_name(resolve, ty, local))
-                                .unwrap_or_else(|| "unit".into())
-                        )
+                    TypeDefKind::Stream(stream_ty) => {
+                        if ty.name.is_some() {
+                            self.type_alias_guard(resolve, ty, local)
+                        } else {
+                            format!(
+                                "stream_{}",
+                                stream_ty
+                                    .map(|ty| self.mangle_name(resolve, ty, local))
+                                    .unwrap_or_else(|| "unit".into())
+                            )
+                        }
                     }
-                    TypeDefKind::Future(ty) => {
-                        format!(
-                            "future_{}",
-                            ty.map(|ty| self.mangle_name(resolve, ty, local))
-                                .unwrap_or_else(|| "unit".into())
-                        )
+                    TypeDefKind::Future(future_ty) => {
+                        if ty.name.is_some() {
+                            self.type_alias_guard(resolve, ty, local)
+                        } else {
+                            format!(
+                                "future_{}",
+                                future_ty
+                                    .map(|inner| self.mangle_name(resolve, inner, local))
+                                    .unwrap_or_else(|| "unit".into())
+                            )
+                        }
                     }
                     TypeDefKind::Map(key, value) => {
-                        format!(
-                            "map_{}_{}",
-                            self.mangle_name(resolve, *key, local),
-                            self.mangle_name(resolve, *value, local)
-                        )
+                        if ty.name.is_some() {
+                            self.type_alias_guard(resolve, ty, local)
+                        } else {
+                            format!(
+                                "map_{}_{}",
+                                self.mangle_name(resolve, *key, local),
+                                self.mangle_name(resolve, *value, local)
+                            )
+                        }
                     }
                     kind => todo!("{kind:?}"),
                 }
@@ -1059,7 +1144,7 @@ impl Go {
                 func.params
                     .iter()
                     .skip(if has_self { 1 } else { 0 })
-                    .map(|Param { name, .. }| name.to_lower_camel_case()),
+                    .map(|Param { name, .. }| escape_go_keyword(&name.to_lower_camel_case())),
             )
             .collect::<Vec<_>>();
 
@@ -1417,6 +1502,11 @@ func wasm_export_{name}({params}) {results} {{
             .skip(if has_self { 1 } else { 0 })
             .map(|Param { name, ty, .. }| {
                 let name = name.to_lower_camel_case();
+                let name = if prefix.is_empty() {
+                    escape_go_keyword(&name)
+                } else {
+                    name
+                };
                 let ty = self.type_name(resolve, *ty, interface, in_import, imports);
                 format!("{prefix}{name} {ty}")
             })
@@ -1520,7 +1610,7 @@ func wasm_export_{name}({params}) {results} {{
 
     fn interface_name(&self, resolve: &Resolve, interface: Option<&WorldKey>) -> String {
         match interface {
-            Some(WorldKey::Name(name)) => name.to_snake_case(),
+            Some(WorldKey::Name(name)) => escape_go_keyword(&name.to_snake_case()),
             Some(WorldKey::Interface(id)) => {
                 let interface = &resolve.interfaces[*id];
                 let package = &resolve.packages[interface.package.unwrap()];
@@ -1891,10 +1981,14 @@ for index := 0; index < int({length}); index++ {{
                         self.generator.tuples.insert(count);
                         self.imports.insert(remote_pkg("types"));
 
-                        let results = (0..count)
-                            .map(|_| self.locals.tmp("result"))
-                            .collect::<Vec<_>>()
-                            .join(", ");
+                        let (results_vec, fields_vec): (Vec<_>, Vec<_>) = (0..count)
+                            .map(|i| {
+                                let name = self.locals.tmp("result");
+                                (name.clone(), format!("F{i}: {name}"))
+                            })
+                            .unzip();
+                        let results = results_vec.join(", ");
+                        let fields = fields_vec.join(", ");
 
                         let types = tuple
                             .types
@@ -1906,7 +2000,7 @@ for index := 0; index < int({length}); index++ {{
                         uwriteln!(
                             self.src,
                             "{results} := {call}
-{result} := witTypes.Tuple{count}[{types}]{{{results}}}"
+{result} := witTypes.Tuple{count}[{types}]{{{fields}}}"
                         );
                     } else {
                         uwriteln!(self.src, "{result} := {call}");
@@ -2082,7 +2176,12 @@ if {value} {{
                     .map(|&ty| self.type_name(resolve, ty))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let fields = operands.join(", ");
+                let fields = operands
+                    .iter()
+                    .enumerate()
+                    .map(|(field_num, value)| format!("F{field_num}: {value}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 self.imports.insert(remote_pkg("types"));
                 results.push(format!("witTypes.Tuple{count}[{types}]{{{fields}}}"));
             }
@@ -2102,9 +2201,18 @@ if {value} {{
                     results.push(format!("({op}).{field}"));
                 }
             }
-            Instruction::RecordLift { ty, .. } => {
+            Instruction::RecordLift { ty, record, .. } => {
                 let name = self.type_name(resolve, Type::Id(*ty));
-                let fields = operands.join(", ");
+                let fields = record
+                    .fields
+                    .iter()
+                    .zip(operands)
+                    .map(|(field, operand)| {
+                        let field_name = field.name.to_upper_camel_case();
+                        format!("{field_name}: {operand}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 results.push(format!("{name}{{{fields}}}"));
             }
             Instruction::OptionLower {

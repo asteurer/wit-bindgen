@@ -1,0 +1,61 @@
+package foo:foo;
+
+world the-world {
+    import test-result;
+    import test-option;
+    import test-list;
+    import test-tuple;
+    import test-map;
+    import test-stream;
+    import test-future;
+}
+
+interface test-result {
+    type a = result<u8, u32>;
+    type b = result<u8, u32>;
+    f1: func(x: future<a>);
+    f2: func(x: future<b>);
+}
+
+interface test-option {
+    type a = option<u8>;
+    type b = option<u8>;
+    f1: func(x: future<a>);
+    f2: func(x: future<b>);
+
+}
+
+interface test-list {
+    type a = list<u8>;
+    type b = list<u8>;
+    f1: func(x: future<a>);
+    f2: func(x: future<b>);
+}
+
+interface test-tuple {
+    type a = tuple<u8, u16, u32>;
+    type b = tuple<u8, u16, u32>;
+    f1: func(x: future<a>);
+    f2: func(x: future<b>);
+}
+
+interface test-map {
+    type a = map<string, u8>;
+    type b = map<string, u8>;
+    f1: func(x: future<a>);
+    f2: func(x: future<b>);
+}
+
+interface test-stream {
+    type a = stream<u8>;
+    type b = stream<u8>;
+    f1: func(x: result<a>);
+    f2: func(x: result<b>);
+}
+
+interface test-future {
+    type a = future<u8>;
+    type b = future<u8>;
+    f1: func(x: result<a>);
+    f2: func(x: result<b>);
+}

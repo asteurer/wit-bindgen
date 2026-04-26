@@ -104,6 +104,14 @@ impl LanguageMethods for Go {
         runner.run_command(
             Command::new("go")
                 .current_dir(verify.bindings_dir)
+                .arg("vet")
+                .arg("-unsafeptr=false")
+                .arg("./..."),
+        )?;
+
+        runner.run_command(
+            Command::new("go")
+                .current_dir(verify.bindings_dir)
                 .env("GOOS", "wasip1")
                 .env("GOARCH", "wasm")
                 .arg("build")
