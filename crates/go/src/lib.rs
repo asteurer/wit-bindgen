@@ -65,6 +65,20 @@ fn escape_go_keyword(name: String) -> String {
     }
 }
 
+/// The bindings generated for variants require helper methods
+/// that have a risk of colliding with bindings generated for
+/// user-defined WIT types.
+fn matches_reserved_variant_function_name(f: &str) -> bool {
+    matches!(f, "Tag")
+}
+
+/// The bindings generated for resources require helper methods
+/// that have a risk of colliding with bindings generated for
+/// user-defined WIT types.
+fn matches_reserved_resource_function_name(f: &str) -> bool {
+    matches!(f, "TakeHandle" | "SetHandle" | "Handle" | "Drop" | "OnDrop")
+}
+
 #[derive(Default, Debug, Copy, Clone)]
 pub enum Format {
     #[default]
@@ -143,6 +157,10 @@ pub struct Opts {
     /// references more than one version of the WIT package.
     #[cfg_attr(feature = "clap", clap(long))]
     pub include_versions: bool,
+
+    /// Mutes warnings (if any)
+    #[cfg_attr(feature = "clap", clap(long))]
+    pub quiet: bool,
 }
 
 impl Opts {
@@ -235,6 +253,7 @@ struct Go {
     futures_and_streams: HashMap<(TypeId, bool), Option<WorldKey>>,
     // Tracks which `future`/`stream` declarations have already been generated.
     generated_futures_and_streams: HashSet<FutureStreamDedup>,
+    warnings: Vec<String>,
 }
 
 impl Go {
@@ -1044,6 +1063,16 @@ import (
             }
         }
 
+        if !self.opts.quiet {
+            let warnings = self
+                .warnings
+                .iter()
+                .map(|w| format!("WARNING: {w}"))
+                .collect::<Vec<String>>()
+                .join("\n");
+            eprintln!("{warnings}");
+        }
+
         Ok(())
     }
 }
@@ -1068,7 +1097,7 @@ impl Go {
         let sig = resolve.wasm_signature(variant, func);
         let import_name = &func.name;
         let name = func.name.to_snake_case().replace('.', "_");
-        let (camel, has_self) = func_declaration(resolve, func);
+        let (camel, has_self, comment) = self.func_declaration(resolve, func);
 
         let module = match interface {
             Some(name) => resolve.name_world_key(name),
@@ -1263,6 +1292,7 @@ defer {PINNER}.Unpin()
 //go:wasmimport {module} {prefix}{import_name}
 func {raw_name}({params}) {results}
 
+{comment}
 func {camel}({go_params}) {go_results} {{
         {pinner}
         {return_area}
@@ -1412,7 +1442,12 @@ func wasm_export_post_return_{name}(result {results}) {{
         };
 
         if self.opts.generate_stubs {
-            let (camel, has_self) = func_declaration(resolve, func);
+            let (camel, has_self, comment) = self.func_declaration(resolve, func);
+            let comment = if comment.is_empty() {
+                "// TODO: Implement".to_string()
+            } else {
+                format!("// TODO: Implement\n//\n{comment}")
+            };
 
             let mut imports = BTreeSet::new();
             let params =
@@ -1424,8 +1459,7 @@ func wasm_export_post_return_{name}(result {results}) {{
                 .or_default()
                 .extend(InterfaceData {
                     code: format!(
-                        r#"
-// TODO: Implement
+                        r#"{comment}
 func {camel}({params}) {results} {{
         panic("not implemented")
 }}
@@ -1637,6 +1671,56 @@ func wasm_export_{name}({params}) {results} {{
         let name = func.name.to_snake_case().replace('.', "_");
 
         format!("{prefix}_{name}")
+    }
+
+    fn func_declaration(&mut self, resolve: &Resolve, func: &Function) -> (String, bool, String) {
+        match &func.kind {
+            FunctionKind::Freestanding | FunctionKind::AsyncFreestanding => (
+                func.item_name().to_upper_camel_case(),
+                false,
+                "".to_string(),
+            ),
+            FunctionKind::Constructor(ty) => {
+                let ty = resolve.types[*ty]
+                    .name
+                    .as_ref()
+                    .unwrap()
+                    .to_upper_camel_case();
+                (format!("Make{ty}"), false, "".to_string())
+            }
+            FunctionKind::Method(ty) | FunctionKind::AsyncMethod(ty) => {
+                let ty = resolve.types[*ty]
+                    .name
+                    .as_ref()
+                    .unwrap()
+                    .to_upper_camel_case();
+                let mut camel = func.item_name().to_upper_camel_case();
+                let mut comment = "".to_string();
+                if matches_reserved_resource_function_name(&camel) {
+                    self.warnings.push(format!(
+                    "The method `{camel}` for resource `{ty}` conflicts with a method reserved by the bindings generator; it will be renamed to `{camel}_()`"
+                ));
+                    comment = format!(
+                        r#"// This is the user-defined method associated with the `{ty}` resource.
+                    // This is suffixed with `_` because it collides with
+                    // the `{camel}` function, which is reserved by the
+                    // bindings generator. "#
+                    );
+                    camel.push('_');
+                }
+
+                (format!("(self *{ty}) {camel}"), true, comment)
+            }
+            FunctionKind::Static(ty) | FunctionKind::AsyncStatic(ty) => {
+                let ty = resolve.types[*ty]
+                    .name
+                    .as_ref()
+                    .unwrap()
+                    .to_upper_camel_case();
+                let camel = func.item_name().to_upper_camel_case();
+                (format!("{ty}{camel}"), false, "".to_string())
+            }
+        }
     }
 }
 
@@ -1952,6 +2036,10 @@ for index := 0; index < int({length}); index++ {{
                     }
                     FunctionKind::Method(_) | FunctionKind::AsyncMethod(_) => {
                         let target = &operands[0];
+                        let mut name = name.clone();
+                        if matches_reserved_resource_function_name(&name) {
+                            name.push('_');
+                        }
                         let args = operands[1..].join(", ");
                         format!("({target}).{name}({args})")
                     }
@@ -2464,7 +2552,7 @@ default:
                         };
 
                         format!(
-                            "case {ty}{name}:
+                            "case {ty}_{name}:
         {set_payload}
         {block}
         {assignments}
@@ -2941,7 +3029,7 @@ func (self *{camel}) OnDrop() {{}}
             .map(|(i, flag)| {
                 let docs = format_docs(&flag.docs);
                 let flag = flag.name.to_upper_camel_case();
-                format!("{docs}{name}{flag} {repr} = 1 << {i}")
+                format!("{docs}{name}_{flag} {repr} = 1 << {i}")
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -2990,7 +3078,7 @@ const (
             .map(|(i, case)| {
                 let docs = format_docs(&case.docs);
                 let case = case.name.to_upper_camel_case();
-                format!("{docs}{name}{case} {repr} = {i}")
+                format!("{docs}{name}_{case} {repr} = {i}")
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -3001,16 +3089,32 @@ const (
             .filter_map(|case| {
                 case.ty.map(|ty| {
                     let case = case.name.to_upper_camel_case();
+                    let mut case_func = case.clone();
                     let ty = self.type_name(self.resolve, ty);
-                    format!(
-                        r#"func (self {name}) {case}() {ty} {{
-        if self.tag != {name}{case} {{
+                    let mangle_comment = if matches_reserved_variant_function_name(&case) {
+                        self.generator.warnings.push(format!("The payload getter for case `{case}` of variant `{name}` conflicts with a method reserved by the bindings generator; it will be renamed to `{case}_()`"));
+
+                        case_func.push('_');
+
+                        format!(r#"// This retrieves the payload of the `{case}` case
+                        // of the `{name}` WIT variant.
+                        //
+                        // This is suffixed with `_` because it collides with
+                        // the `{case}` function, which is reserved by the
+                        // bindings generator."#)
+
+                    } else {String::new()};
+
+                        format!(
+                            r#"{mangle_comment}
+                            func (self {name}) {case_func}() {ty} {{
+        if self.tag != {name}_{case} {{
                 panic("tag mismatch")
         }}
         return self.value.({ty})
 }}
 "#
-                    )
+                        )
                 })
             })
             .collect::<Vec<_>>()
@@ -3029,7 +3133,7 @@ const (
                 let case = case.name.to_upper_camel_case();
                 format!(
                     r#"func Make{name}{case}({param}) {name} {{
-        return {name}{{{name}{case}, {value}}}
+        return {name}{{{name}_{case}, {value}}}
 }}
 "#
                 )
@@ -3107,7 +3211,7 @@ func (self {name}) Tag() {repr} {{
             .map(|(i, case)| {
                 let docs = format_docs(&case.docs);
                 let case = case.name.to_upper_camel_case();
-                format!("{docs}{name}{case} {repr} = {i}")
+                format!("{docs}{name}_{case} {repr} = {i}")
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -3322,40 +3426,6 @@ fn any(resolve: &Resolve, ty: Type, fun: &dyn Fn(Type) -> bool) -> bool {
             }
         }
         _ => todo!("{ty:?}"),
-    }
-}
-
-fn func_declaration(resolve: &Resolve, func: &Function) -> (String, bool) {
-    match &func.kind {
-        FunctionKind::Freestanding | FunctionKind::AsyncFreestanding => {
-            (func.item_name().to_upper_camel_case(), false)
-        }
-        FunctionKind::Constructor(ty) => {
-            let ty = resolve.types[*ty]
-                .name
-                .as_ref()
-                .unwrap()
-                .to_upper_camel_case();
-            (format!("Make{ty}"), false)
-        }
-        FunctionKind::Method(ty) | FunctionKind::AsyncMethod(ty) => {
-            let ty = resolve.types[*ty]
-                .name
-                .as_ref()
-                .unwrap()
-                .to_upper_camel_case();
-            let camel = func.item_name().to_upper_camel_case();
-            (format!("(self *{ty}) {camel}"), true)
-        }
-        FunctionKind::Static(ty) | FunctionKind::AsyncStatic(ty) => {
-            let ty = resolve.types[*ty]
-                .name
-                .as_ref()
-                .unwrap()
-                .to_upper_camel_case();
-            let camel = func.item_name().to_upper_camel_case();
-            (format!("{ty}{camel}"), false)
-        }
     }
 }
 
