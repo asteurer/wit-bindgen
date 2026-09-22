@@ -52,19 +52,25 @@ interface resource-collisions {
 
 interface record-collisions {
     // Variant
-    record a-b-c {}
+    record a-b-c {
+        foo: string,
+    }
     variant a-b {
         c,
     }
 
     // Enum
-    record z-y-x {}
+    record z-y-x {
+        foo: string,
+    }
     enum z-y {
         x,
     }
 
     // Flags
-    record q-r-s {}
+    record q-r-s {
+        foo: string,
+    }
     flags q-r {
         s,
     }
@@ -91,7 +97,9 @@ interface variant-collisions {
     variant q-r {
         s,
     }
-    record q-r-s {}
+    record q-r-s {
+        foo: string,
+    }
 
     // Resource
     variant d-e {
@@ -129,7 +137,9 @@ interface enum-collisions {
     enum q-r {
         s,
     }
-    record q-r-s {}
+    record q-r-s {
+        foo: string
+    }
 
     // Resource
     enum t-u {
@@ -187,7 +197,9 @@ interface flags-collisions {
     flags x-y {
         z,
     }
-    record x-y-z {}
+    record x-y-z {
+        foo: string,
+    }
 
     // Resource
     flags h-i {
